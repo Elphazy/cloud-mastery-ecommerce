@@ -14,9 +14,15 @@ jobs:
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ secrets.GCP_REGION }}
+      DEPLOYER_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT_EMAIL || secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
       BACKEND_SERVICE_NAME: ${{ secrets.CLOUD_RUN_BACKEND_SERVICE_NAME }}
       FRONTEND_SERVICE_NAME: ${{ secrets.CLOUD_RUN_FRONTEND_SERVICE_NAME }}
-      RUN_DB_BOOTSTRAP: ${{ vars.RUN_DB_BOOTSTRAP || 'true' }}
+      CART_AGENT_FUNCTION_NAME: cart-agent
+      CONNECT_BIGQUERY_FUNCTION_NAME: sync-mysql-to-bq
+      SEARCH_PRODUCTS_FUNCTION_NAME: search-products
+      BQ_DATASET: ${{ vars.BQ_DATASET || 'cloud_mastery' }}
+      BQ_PRODUCTS_TABLE: ${{ vars.BQ_PRODUCTS_TABLE || 'products' }}
+      CONNECT_BIGQUERY_TABLES: ${{ vars.CONNECT_BIGQUERY_TABLES || 'table_parts_catalog,table_finance,orders,order_details,customers,products' }}
       BACKEND_IMAGE: gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.CLOUD_RUN_BACKEND_SERVICE_NAME }}:${{ github.sha }}
       FRONTEND_IMAGE: gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.CLOUD_RUN_FRONTEND_SERVICE_NAME }}:${{ github.sha }}
     steps:
@@ -29,22 +35,22 @@ jobs:
           : "${{ secrets.GCP_PROJECT_ID }}"
           : "${{ secrets.GCP_REGION }}"
           : "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}"
-          : "${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}"
+          : "${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT_EMAIL || secrets.GCP_SERVICE_ACCOUNT_EMAIL }}"
           : "${{ secrets.CLOUD_RUN_BACKEND_SERVICE_NAME }}"
           : "${{ secrets.CLOUD_RUN_FRONTEND_SERVICE_NAME }}"
           : "${{ secrets.CLOUDSQL_INSTANCE_CONNECTION_NAME }}"
           : "${{ secrets.DB_USER }}"
-          : "${{ secrets.DB_PASS }}"
+          : "${{ secrets.DB_PASSWORD || secrets.DB_PASS }}"
           : "${{ secrets.DB_NAME }}"
-          : "${{ secrets.NEXT_PUBLIC_CHAT_DEPLOYMENT }}"
-          : "${{ secrets.NEXT_PUBLIC_CHAT_TITLE }}"
-          : "${{ secrets.NEXT_PUBLIC_CART_API_URL }}"
+          : "${{ secrets.FRONTEND_NEXT_PUBLIC_CHAT_DEPLOYMENT || secrets.NEXT_PUBLIC_CHAT_DEPLOYMENT }}"
+          : "${{ secrets.FRONTEND_NEXT_PUBLIC_CHAT_TITLE || secrets.NEXT_PUBLIC_CHAT_TITLE }}"
+          : "${{ secrets.FRONTEND_NEXT_PUBLIC_CART_API_URL || secrets.NEXT_PUBLIC_CART_API_URL }}"
 
       - name: Authenticate to Google Cloud with Workload Identity Federation
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+          service_account: ${{ env.DEPLOYER_SERVICE_ACCOUNT }}
           token_format: 'access_token'
 
       - name: Set up Cloud SDK
@@ -52,6 +58,16 @@ jobs:
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
           install_components: 'beta'
+
+      - name: Enable required APIs for Cloud Functions
+        run: |
+          gcloud services enable \
+            cloudfunctions.googleapis.com \
+            run.googleapis.com \
+            cloudbuild.googleapis.com \
+            artifactregistry.googleapis.com \
+            eventarc.googleapis.com \
+            storage.googleapis.com
 
       - name: Configure Docker for Google Cloud
         run: |
@@ -72,7 +88,7 @@ jobs:
           gcloud run deploy $BACKEND_SERVICE_NAME \
             --image $BACKEND_IMAGE \
             --region $REGION \
-            --service-account=${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }} \
+            --service-account=$DEPLOYER_SERVICE_ACCOUNT \
             --port 8080 \
             --allow-unauthenticated \
             --set-secrets="MYSQL_PRISMA_URL=MYSQL_PRISMA_URL:latest" \
@@ -107,15 +123,7 @@ jobs:
           cd backend
           npm run prisma:migrate:deploy
         env:
-          MYSQL_PRISMA_URL: "mysql://${{ secrets.DB_USER }}:${{ secrets.DB_PASS }}@127.0.0.1:3306/${{ secrets.DB_NAME }}"
-
-      - name: Bootstrap database from SQL dump (optional)
-        if: env.RUN_DB_BOOTSTRAP == 'true'
-        run: |
-          cd backend
-          npm run prisma:seed:dump
-        env:
-          MYSQL_PRISMA_URL: "mysql://${{ secrets.DB_USER }}:${{ secrets.DB_PASS }}@127.0.0.1:3306/${{ secrets.DB_NAME }}"
+          MYSQL_PRISMA_URL: "mysql://${{ secrets.DB_USER }}:${{ secrets.DB_PASSWORD || secrets.DB_PASS }}@127.0.0.1:3306/${{ secrets.DB_NAME }}"
 
        # Retrieve backend Cloud Run URL
       - name: Get backend Cloud Run URL
@@ -129,9 +137,9 @@ jobs:
         run: |
           docker build \
             --build-arg NEXT_PUBLIC_API_URL="${BACKEND_URL}/api/v1" \
-            --build-arg NEXT_PUBLIC_CART_API_URL="${{ secrets.NEXT_PUBLIC_CART_API_URL }}" \
-            --build-arg NEXT_PUBLIC_CHAT_DEPLOYMENT="${{ secrets.NEXT_PUBLIC_CHAT_DEPLOYMENT }}" \
-            --build-arg NEXT_PUBLIC_CHAT_TITLE="${{ secrets.NEXT_PUBLIC_CHAT_TITLE }}" \
+            --build-arg NEXT_PUBLIC_CART_API_URL="${{ secrets.FRONTEND_NEXT_PUBLIC_CART_API_URL || secrets.NEXT_PUBLIC_CART_API_URL }}" \
+            --build-arg NEXT_PUBLIC_CHAT_DEPLOYMENT="${{ secrets.FRONTEND_NEXT_PUBLIC_CHAT_DEPLOYMENT || secrets.NEXT_PUBLIC_CHAT_DEPLOYMENT }}" \
+            --build-arg NEXT_PUBLIC_CHAT_TITLE="${{ secrets.FRONTEND_NEXT_PUBLIC_CHAT_TITLE || secrets.NEXT_PUBLIC_CHAT_TITLE }}" \
             -t $FRONTEND_IMAGE ./frontend
 
       - name: Push frontend Docker image
@@ -146,3 +154,47 @@ jobs:
             --region $REGION \
             --port 3000 \
             --allow-unauthenticated
+
+      - name: Deploy Cart Agent Cloud Function (Gen2)
+        run: |
+          gcloud functions deploy $CART_AGENT_FUNCTION_NAME \
+            --gen2 \
+            --region $REGION \
+            --runtime python311 \
+            --entry-point cart_agent \
+            --source ./Cart-agent \
+            --trigger-http \
+            --allow-unauthenticated \
+            --memory 512Mi \
+            --timeout 120s \
+            --set-env-vars "GCP_PROJECT_ID=$PROJECT_ID,BQ_PROJECT=$PROJECT_ID,BQ_DATASET=$BQ_DATASET,BQ_PRODUCTS_TABLE=$BQ_PRODUCTS_TABLE"
+
+      - name: Deploy Connect BigQuery Cloud Function (Gen2)
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD || secrets.DB_PASS }}
+        run: |
+          gcloud functions deploy $CONNECT_BIGQUERY_FUNCTION_NAME \
+            --gen2 \
+            --region $REGION \
+            --runtime python311 \
+            --entry-point sync_mysql_to_bq \
+            --source ./Connect-bigquery \
+            --trigger-http \
+            --allow-unauthenticated \
+            --memory 512Mi \
+            --timeout 300s \
+            --set-env-vars "GCP_PROJECT_ID=$PROJECT_ID,BQ_PROJECT=$PROJECT_ID,BQ_DATASET=$BQ_DATASET,CLOUDSQL_INSTANCE_CONNECTION_NAME=${{ secrets.CLOUDSQL_INSTANCE_CONNECTION_NAME }},DB_NAME=${{ secrets.DB_NAME }},DB_USER=${{ secrets.DB_USER }},DB_PASSWORD=$DB_PASSWORD,CONNECT_BIGQUERY_TABLES=$CONNECT_BIGQUERY_TABLES"
+
+      - name: Deploy Search Products Cloud Function (Gen2)
+        run: |
+          gcloud functions deploy $SEARCH_PRODUCTS_FUNCTION_NAME \
+            --gen2 \
+            --region $REGION \
+            --runtime python311 \
+            --entry-point search_product \
+            --source ./Search-products \
+            --trigger-http \
+            --allow-unauthenticated \
+            --memory 512Mi \
+            --timeout 120s \
+            --set-env-vars "GCP_PROJECT_ID=$PROJECT_ID,BQ_PROJECT=$PROJECT_ID,BQ_DATASET=$BQ_DATASET,BQ_PRODUCTS_TABLE=$BQ_PRODUCTS_TABLE"

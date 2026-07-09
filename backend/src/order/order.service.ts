@@ -7,33 +7,12 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { PrismaService } from '../prisma.service';
 import { Prisma } from '@prisma/client';
-import { BigQuery } from '@google-cloud/bigquery';
 
 @Injectable()
 export class OrderService {
   private readonly logger = new Logger(OrderService.name);
-  private readonly bigQuery = new BigQuery();
-  private readonly ordersTable =
-    process.env.BIGQUERY_ORDERS_TABLE ||
-    'pawait-data-hub.cloud_mastery.orders';
-  private readonly orderDetailsTable =
-    process.env.BIGQUERY_ORDER_DETAILS_TABLE ||
-    'pawait-data-hub.cloud_mastery.order_details';
-  private readonly customersTable =
-    process.env.BIGQUERY_CUSTOMERS_TABLE ||
-    'pawait-data-hub.cloud_mastery.customers';
 
   constructor(private prisma: PrismaService) {}
-
-  private toIso(value: unknown): string | null {
-    if (value && typeof value === 'object' && 'value' in value) {
-      return String((value as { value: unknown }).value);
-    }
-    if (value == null) {
-      return null;
-    }
-    return String(value);
-  }
 
   async create(createOrderDto: CreateOrderDto) {
     const { items, ...orderData } = createOrderDto;

@@ -1,13 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { BigQuery } from '@google-cloud/bigquery';
+import { PrismaService } from '../prisma.service';
 
 @Injectable()
 export class CarPartsService {
   private readonly logger = new Logger(CarPartsService.name);
-  private readonly bigQuery = new BigQuery();
-  private readonly partsTable =
-    process.env.BIGQUERY_PARTS_TABLE ||
-    'pawait-data-hub.cloud_mastery.table_parts_catalog';
+  private readonly partsTable = process.env.MYSQL_PARTS_TABLE || 'table_parts_catalog';
+
+  constructor(private prisma: PrismaService) {}
+
+  private getSafeTableName() {
+    if (!/^[A-Za-z0-9_]+$/.test(this.partsTable)) {
+      throw new Error(`Invalid MYSQL_PARTS_TABLE value: ${this.partsTable}`);
+    }
+    return this.partsTable;
+  }
 
   private toIso(value: unknown): string | null {
     if (value && typeof value === 'object' && 'value' in value) {
@@ -21,59 +27,36 @@ export class CarPartsService {
 
   async findAll() {
     try {
-      const [rows] = await this.bigQuery.query({
-        query: `
-          SELECT
-            id,
-            sku,
-            make,
-            model,
-            CAST(yearFrom AS STRING) AS yearFrom,
-            CAST(yearTo AS STRING) AS yearTo,
-            brand,
-            batteryType,
-            CAST(capacityAh AS STRING) AS capacityAh,
-            CAST(cca AS STRING) AS cca,
-            CAST(voltage AS STRING) AS voltage,
-            CAST(engineCc AS STRING) AS engineCc,
-            branchLocation,
-            CAST(stock AS STRING) AS stock,
-            CAST(warrantyMonths AS STRING) AS warrantyMonths,
-            CAST(priceKes AS STRING) AS priceKes,
-            image_url AS imageUrl,
-            created_at,
-            updated_at
-          FROM \`${this.partsTable}\`
-          ORDER BY created_at DESC
-        `,
-        location: process.env.BIGQUERY_LOCATION || 'US',
-      });
+      const table = this.getSafeTableName();
+      const rows = await this.prisma.$queryRawUnsafe<Array<Record<string, unknown>>>(
+        `SELECT * FROM \`${table}\` ORDER BY created_at DESC`,
+      );
 
-      return (rows as Array<Record<string, unknown>>).map((row) => ({
+      return rows.map((row) => ({
         id: row.id ? String(row.id) : '',
         sku: row.sku ? String(row.sku) : '',
         make: row.make ? String(row.make) : '',
         model: row.model ? String(row.model) : '',
-        yearFrom: row.yearFrom ? String(row.yearFrom) : '',
-        yearTo: row.yearTo ? String(row.yearTo) : '',
+        yearFrom: row.yearFrom || row.year_from ? String(row.yearFrom || row.year_from) : '',
+        yearTo: row.yearTo || row.year_to ? String(row.yearTo || row.year_to) : '',
         brand: row.brand ? String(row.brand) : '',
-        batteryType: row.batteryType ? String(row.batteryType) : '',
-        capacityAh: row.capacityAh ? String(row.capacityAh) : '0',
+        batteryType: row.batteryType || row.battery_type ? String(row.batteryType || row.battery_type) : '',
+        capacityAh: row.capacityAh || row.capacity_ah ? String(row.capacityAh || row.capacity_ah) : '0',
         cca: row.cca ? String(row.cca) : '0',
         voltage: row.voltage ? String(row.voltage) : '0',
-        engineCc: row.engineCc ? String(row.engineCc) : '0',
-        branchLocation: row.branchLocation ? String(row.branchLocation) : '',
+        engineCc: row.engineCc || row.engine_cc ? String(row.engineCc || row.engine_cc) : '0',
+        branchLocation: row.branchLocation || row.branch_location ? String(row.branchLocation || row.branch_location) : '',
         stock: row.stock ? String(row.stock) : '0',
-        warrantyMonths: row.warrantyMonths ? String(row.warrantyMonths) : '0',
-        priceKes: row.priceKes ? String(row.priceKes) : '0',
-        imageUrl: row.imageUrl ? String(row.imageUrl) : null,
+        warrantyMonths: row.warrantyMonths || row.warranty_months ? String(row.warrantyMonths || row.warranty_months) : '0',
+        priceKes: row.priceKes || row.price_kes ? String(row.priceKes || row.price_kes) : '0',
+        imageUrl: row.imageUrl || row.image_url ? String(row.imageUrl || row.image_url) : null,
         created_at: this.toIso(row.created_at),
         updated_at: this.toIso(row.updated_at),
         order_id: row.order_id ? String(row.order_id) : null,
       }));
     } catch (error) {
       this.logger.error(
-        `BigQuery car parts read failed: ${error instanceof Error ? error.message : 'unknown error'}`,
+        `MySQL car parts read failed: ${error instanceof Error ? error.message : 'unknown error'}`,
       );
       return [];
     }
