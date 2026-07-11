@@ -94,55 +94,68 @@ export function ShopProvider({ children }: { children: React.ReactNode }) {
       setActiveSessionId(aid);
   }, []);
 
-  useEffect(() => {
-    hydrateFromStorage();
-    const interval = setInterval(hydrateFromStorage, 100);
-    return () => clearInterval(interval);
-  }, [hydrateFromStorage]);
+// 1. Run hydration ONCE on mount, not on a 100ms loop
+useEffect(() => {
+  hydrateFromStorage();
+  
+  // Optional: Listen for cross-tab changes natively without a loop
+  const handleStorageChange = (e: StorageEvent) => {
+    if (e.key === CART_STORAGE_KEY) hydrateFromStorage();
+  };
+  window.addEventListener("storage", handleStorageChange);
+  
+  return () => window.removeEventListener("storage", handleStorageChange);
+}, [hydrateFromStorage]);
 
-  // ── Backend poll loop: sync server cart for the active session id ──
-  useEffect(() => {
-    if (!activeSessionId) return;
 
-    const syncFromApi = async () => {
-      try {
-        const res = await getCartFromApi(activeSessionId);
-        if (!res.success) return;
+// 2. Safely merge API data without fighting sessionStorage
+useEffect(() => {
+  if (!activeSessionId) return;
 
-        // Merge agent-side cart items into React state.
-        // The Python service is the source of truth for items the agent added.
-        setCartItems((prev) => {
-          const merged = [...prev];
-          for (const apiItem of res.cart.items) {
-            const existing = merged.find((i) => i.id === apiItem.productId);
-            if (existing) {
-              if (existing.cartQuantity !== apiItem.quantity) {
-                existing.cartQuantity = apiItem.quantity;
-              }
-            } else {
-              merged.push({
-                id: apiItem.productId,
-                name: apiItem.productName,
-                unitCost: String(apiItem.unitCost),
-                cartQuantity: apiItem.quantity,
-                category: "",
-                imageUrl: "",
-                quantity: 9999,
-                totalCost: String(apiItem.lineTotalKes),
-              } as unknown as CartItem);
+  const syncFromApi = async () => {
+    try {
+      const res = await getCartFromApi(activeSessionId);
+      if (!res.success || !res.cart.items) return;
+
+      setCartItems((prev) => {
+        // If the backend has items, but our local state doesn't, accept the backend!
+        const merged = [...prev];
+        let stateChanged = false;
+
+        for (const apiItem of res.cart.items) {
+          const existing = merged.find((i) => i.id === apiItem.productId);
+          if (existing) {
+            if (existing.cartQuantity !== apiItem.quantity) {
+              existing.cartQuantity = apiItem.quantity;
+              stateChanged = true;
             }
+          } else {
+            merged.push({
+              id: apiItem.productId,
+              name: apiItem.productName,
+              unitCost: String(apiItem.unitCost),
+              cartQuantity: apiItem.quantity,
+              category: "",
+              imageUrl: "",
+              quantity: 9999,
+              totalCost: String(apiItem.lineTotalKes),
+            } as unknown as CartItem);
+            stateChanged = true;
           }
-          return merged;
-        });
-      } catch {
-        // Silently ignore network errors during polling
-      }
-    };
+        }
+        
+        // Only trigger a React update if something actually changed
+        return stateChanged ? merged : prev;
+      });
+    } catch {
+      // Silently ignore network errors
+    }
+  };
 
-    syncFromApi();
-    const interval = setInterval(syncFromApi, 2000);
-    return () => clearInterval(interval);
-  }, [activeSessionId]);
+  syncFromApi();
+  const interval = setInterval(syncFromApi, 2000);
+  return () => clearInterval(interval);
+}, [activeSessionId]);
 
   // ── Active Session Expiry Check ──
   useEffect(() => {
