@@ -354,11 +354,7 @@ useEffect(() => {
         });
 
         if (selectedCustomerId) {
-          const selected = customerList.find((c: any) => c?.id === selectedCustomerId);
-          const selectedIsSessionGenerated = String(selected?.email || "").endsWith("@soko.user");
-          if (selectedIsSessionGenerated) {
-            idsToDelete.add(selectedCustomerId);
-          }
+          idsToDelete.add(selectedCustomerId);
         }
 
         if (idsToDelete.size > 0) {
@@ -395,27 +391,8 @@ useEffect(() => {
     setActiveSessionId(null);
     setSelectedCustomerId("");
 
-    sessionStorage.removeItem(CART_STORAGE_KEY);
-    sessionStorage.removeItem(SESSION_STORAGE_KEY);
-    sessionStorage.removeItem(CUSTOMER_STORAGE_KEY);
-    sessionStorage.removeItem("agent-session-id");
-
-    localStorage.removeItem(LOCAL_CART_STORAGE_KEY);
-    localStorage.removeItem(LOCAL_SESSION_STORAGE_KEY);
-    localStorage.removeItem(LOCAL_CUSTOMER_STORAGE_KEY);
-    localStorage.removeItem(LEGACY_LOCAL_CUSTOMER_STORAGE_KEY);
-
-    // Also purge messenger/local keys so reset matches a first-time visit.
-    Object.keys(sessionStorage).forEach((key) => {
-      if (key.startsWith("chat-messenger-") || key.startsWith("__next_")) {
-        sessionStorage.removeItem(key);
-      }
-    });
-    Object.keys(localStorage).forEach((key) => {
-      if (key.startsWith("chat-messenger-") || key.startsWith("__next_")) {
-        localStorage.removeItem(key);
-      }
-    });
+    sessionStorage.clear();
+    localStorage.clear();
 
     window.location.assign("/shop");
     };

@@ -3,10 +3,14 @@ import "./chat-messenger-default.css";
 import "./chat-messenger-overrides.css";
 import ChatWidget from "./components/ChatWidget";
 import Script from "next/script";
+import type { Metadata } from "next";
 
-export const metadata = {
+export const metadata: Metadata = {
   title: "Soko Marketplace",
   description: "Standalone storefront application",
+  icons: {
+    icon: "/logo.png",
+  },
 };
 
 export default function RootLayout({
