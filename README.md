@@ -4,6 +4,7 @@ This folder contains a standalone storefront:
 
 - `frontend/`: Next.js storefront available at `/shop`
 - `backend/`: NestJS API for storefront data
+There is also setup-github-wif.bat
 
 ## Run Shop Backend
 
