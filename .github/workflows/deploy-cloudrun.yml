@@ -24,6 +24,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+   # DELETE THIS SECTION:
       - name: Validate required secrets
         run: |
           set -euo pipefail
