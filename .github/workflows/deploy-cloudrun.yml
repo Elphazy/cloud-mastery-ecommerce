@@ -74,16 +74,11 @@ jobs:
           export MYSQL_PRISMA_URL="mysql://${{ secrets.DB_USER }}:${ENCODED_PASS}@127.0.0.1:3306/${{ secrets.DB_NAME }}"
           npm run prisma:migrate:deploy
 
-      - name: Get Backend URL
-        run: |
-          B_URL=$(gcloud run services describe $BACKEND_SERVICE_NAME --region $REGION --format='value(status.url)')
-          echo "BACKEND_URL=$B_URL" >> $GITHUB_ENV
-
       - name: Build and Push Frontend
         run: |
+          BACKEND_URL=$(gcloud run services describe $BACKEND_SERVICE_NAME --region $REGION --format='value(status.url)')
           docker build \
             --build-arg NEXT_PUBLIC_API_URL="${BACKEND_URL}/api/v1" \
-            --build-arg NEXT_PUBLIC_CART_API_URL="${{ secrets.NEXT_PUBLIC_CART_API_URL }}" \
             -t $FRONTEND_IMAGE ./frontend
           docker push $FRONTEND_IMAGE
 
@@ -98,8 +93,8 @@ jobs:
       - name: Get Frontend URL
         id: get-frontend-url
         run: |
-          F_URL=$(gcloud run services describe $FRONTEND_SERVICE_NAME --region $REGION --format='value(status.url)')
-          echo "frontend_url=$F_URL" >> "$GITHUB_OUTPUT"
+          URL=$(gcloud run services describe $FRONTEND_SERVICE_NAME --region $REGION --format='value(status.url)')
+          echo "frontend_url=$URL" >> "$GITHUB_OUTPUT"
 
   deploy-functions:
     runs-on: ubuntu-latest
@@ -114,38 +109,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
-
       - name: Authenticate
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT_EMAIL }}
-
-      - name: Deploy Cart Agent (checkout-service)
+      - name: Deploy Cloud Functions
         run: |
-          gcloud functions deploy checkout-service \
-            --gen2 --region $REGION --runtime nodejs22 --entry-point cart_agent \
-            --source ./checkout-service --trigger-http --allow-unauthenticated \
-            --service-account=$DEPLOYER_SERVICE_ACCOUNT --quiet \
-            --set-env-vars "GCP_PROJECT_ID=$PROJECT_ID,PESAPAL_CONSUMER_KEY=${{ secrets.PESAPAL_CONSUMER_KEY }}"
-
-      - name: Deploy Sync Function (Connect-bigquery)
-        run: |
-          gcloud functions deploy sync-mysql-to-bq \
-            --gen2 --region $REGION --runtime python311 --entry-point sync_mysql_to_bq \
-            --source ./Connect-bigquery --trigger-http --allow-unauthenticated \
-            --service-account=$DEPLOYER_SERVICE_ACCOUNT --quiet
-
-      - name: Deploy Car Parts (search-parts)
-        run: |
-          gcloud functions deploy search-parts \
-            --gen2 --region $REGION --runtime python311 --entry-point search_parts \
-            --source ./search-parts --trigger-http --allow-unauthenticated \
-            --service-account=$DEPLOYER_SERVICE_ACCOUNT --quiet
-
-      - name: Deploy Search Products (Search-products)
-        run: |
-          gcloud functions deploy search-products \
-            --gen2 --region $REGION --runtime python311 --entry-point search_product \
-            --source ./Search-products --trigger-http --allow-unauthenticated \
-            --service-account=$DEPLOYER_SERVICE_ACCOUNT --quiet
+          gcloud functions deploy checkout-service --gen2 --region $REGION --runtime nodejs22 --entry-point cart_agent --source ./checkout-service --trigger-http --allow-unauthenticated --service-account=$DEPLOYER_SERVICE_ACCOUNT --quiet
+          gcloud functions deploy sync-mysql-to-bq --gen2 --region $REGION --runtime python311 --entry-point sync_mysql_to_bq --source ./Connect-bigquery --trigger-http --allow-unauthenticated --service-account=$DEPLOYER_SERVICE_ACCOUNT --quiet
+          gcloud functions deploy search-parts --gen2 --region $REGION --runtime python311 --entry-point search_parts --source ./search-parts --trigger-http --allow-unauthenticated --service-account=$DEPLOYER_SERVICE_ACCOUNT --quiet
+          gcloud functions deploy search-products --gen2 --region $REGION --runtime python311 --entry-point search_product --source ./Search-products --trigger-http --allow-unauthenticated --service-account=$DEPLOYER_SERVICE_ACCOUNT --quiet
