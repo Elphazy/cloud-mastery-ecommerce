@@ -39,7 +39,7 @@ jobs:
       - name: Authenticate to Google Cloud with Workload Identity Federation
         uses: google-github-actions/auth@v3
         with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }} # <--- ADD THIS LINE
+          project_id: ${{ secrets.GCP_PROJECT_ID }} 
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           # Ensure this name exactly matches the one you just edited in GitHub
           service_account: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT_EMAIL }}
@@ -108,8 +108,7 @@ jobs:
           gcloud run services update "$BACKEND_SERVICE_NAME_SAFE" --region "$REGION" --project "$PROJECT_ID" --remove-env-vars MYSQL_PRISMA_URL --quiet || true
           gcloud run services update "$BACKEND_SERVICE_NAME_SAFE" --region "$REGION" --project "$PROJECT_ID" --remove-secrets MYSQL_PRISMA_URL --quiet || true
 
-  # Deploy backend to Cloud Run
-      - name: Deploy backend to Cloud Run
+  - name: Deploy backend to Cloud Run
         run: |
           gcloud run deploy $BACKEND_SERVICE_NAME_SAFE \
             --image $BACKEND_IMAGE \
