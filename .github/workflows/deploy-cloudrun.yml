@@ -14,10 +14,9 @@ jobs:
       contents: 'read'
       id-token: 'write'
     env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  REGION: ${{ secrets.GCP_REGION }}
-  # Match the secret name you actually have in GitHub:
-  DEPLOYER_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ secrets.GCP_REGION }}
+      DEPLOYER_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT }}
       BACKEND_SERVICE_NAME: ${{ secrets.CLOUD_RUN_BACKEND_SERVICE_NAME }}
       FRONTEND_SERVICE_NAME: ${{ secrets.CLOUD_RUN_FRONTEND_SERVICE_NAME }}
       BQ_DATASET: ${{ vars.BQ_DATASET || 'cloud_mastery' }}
