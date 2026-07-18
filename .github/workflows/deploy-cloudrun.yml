@@ -145,7 +145,7 @@ jobs:
           cd backend
           npm ci
 
-      # --- UPDATED PRISMA MIGRATION STEP ---
+# --- UPDATED PRISMA MIGRATION STEP ---
       - name: Run Prisma migrations
         run: |
           cd backend
