@@ -39,8 +39,9 @@ jobs:
       - name: Authenticate to Google Cloud with Workload Identity Federation
         uses: google-github-actions/auth@v3
         with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }} # <--- ADD THIS LINE
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          # Ensure _EMAIL is here:
+          # Ensure this name exactly matches the one you just edited in GitHub
           service_account: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT_EMAIL }}
           token_format: 'access_token'
 
@@ -113,6 +114,7 @@ jobs:
           gcloud run deploy $BACKEND_SERVICE_NAME_SAFE \
             --image $BACKEND_IMAGE \
             --region $REGION \
+            --project "$PROJECT_ID" \ # <--- ADD THIS LINE
             --service-account=$DEPLOYER_SERVICE_ACCOUNT \
             --port 8080 \
             --allow-unauthenticated \
