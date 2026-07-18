@@ -24,24 +24,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Validate required secrets
-        env:
-          # This connects the Secrets directly to the names the script below uses
-          CHECK_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          CHECK_REGION: ${{ secrets.GCP_REGION }}
-          CHECK_WIF: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-        run: |
-          echo "Checking for required secrets..."
-          [[ -n "$CHECK_PROJECT_ID" ]] || { echo "GCP_PROJECT_ID secret is missing in GitHub Settings"; exit 1; }
-          [[ -n "$CHECK_REGION" ]] || { echo "GCP_REGION secret is missing in GitHub Settings"; exit 1; }
-          [[ -n "$CHECK_WIF" ]] || { echo "GCP_WORKLOAD_IDENTITY_PROVIDER secret is missing in GitHub Settings"; exit 1; }
-          echo "All basic secrets are present."
-      - name: Authenticate to Google Cloud with Workload Identity Federation
+      - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }} 
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          # Ensure this name exactly matches the one you just edited in GitHub
           service_account: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT_EMAIL }}
           token_format: 'access_token'
 
@@ -49,68 +35,24 @@ jobs:
         uses: google-github-actions/setup-gcloud@v3
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-          install_components: 'beta'
 
-      - name: Prepare lowercase image tags
+      - name: Prepare image tags
         run: |
-          sanitize_cloud_run_name() {
-            local raw="$1"
-            local lowered
-            lowered="$(echo "$raw" | tr '[:upper:]' '[:lower:]')"
-            lowered="$(echo "$lowered" | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')"
-            lowered="${lowered:0:63}"
-            lowered="$(echo "$lowered" | sed -E 's/-+$//')"
-            if [[ -z "$lowered" ]]; then
-              lowered="app"
-            fi
-            echo "$lowered"
-          }
-
           PROJECT_ID_LC="$(echo "$PROJECT_ID" | tr '[:upper:]' '[:lower:]')"
-          BACKEND_SERVICE_SAFE="$(sanitize_cloud_run_name "$BACKEND_SERVICE_NAME")"
-          FRONTEND_SERVICE_SAFE="$(sanitize_cloud_run_name "$FRONTEND_SERVICE_NAME")"
+          echo "BACKEND_IMAGE=gcr.io/${PROJECT_ID_LC}/${BACKEND_SERVICE_NAME}:${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "FRONTEND_IMAGE=gcr.io/${PROJECT_ID_LC}/${FRONTEND_SERVICE_NAME}:${GITHUB_SHA}" >> "$GITHUB_ENV"
 
-          echo "BACKEND_SERVICE_NAME_SAFE=${BACKEND_SERVICE_SAFE}" >> "$GITHUB_ENV"
-          echo "FRONTEND_SERVICE_NAME_SAFE=${FRONTEND_SERVICE_SAFE}" >> "$GITHUB_ENV"
-          echo "BACKEND_IMAGE=gcr.io/${PROJECT_ID_LC}/${BACKEND_SERVICE_SAFE}:${GITHUB_SHA}" >> "$GITHUB_ENV"
-          echo "FRONTEND_IMAGE=gcr.io/${PROJECT_ID_LC}/${FRONTEND_SERVICE_SAFE}:${GITHUB_SHA}" >> "$GITHUB_ENV"
+      - name: Configure Docker
+        run: gcloud auth configure-docker --quiet
 
-      - name: Configure Docker for Google Cloud
-        run: |
-          gcloud auth configure-docker
-
-      # Build and push backend
-      - name: Build backend Docker image
+      - name: Build and Push Backend
         run: |
           docker build -t $BACKEND_IMAGE ./backend
-
-      - name: Push backend Docker image
-        run: |
           docker push $BACKEND_IMAGE
 
-      - name: Sync MYSQL_PRISMA_URL to Secret Manager
+      - name: Deploy Backend
         run: |
-          if gcloud secrets describe MYSQL_PRISMA_URL --project "$PROJECT_ID" >/dev/null 2>&1; then
-            echo -n "${{ secrets.MYSQL_PRISMA_URL }}" | gcloud secrets versions add MYSQL_PRISMA_URL \
-              --project "$PROJECT_ID" \
-              --data-file=- \
-              --quiet
-          else
-            echo -n "${{ secrets.MYSQL_PRISMA_URL }}" | gcloud secrets create MYSQL_PRISMA_URL \
-              --project "$PROJECT_ID" \
-              --data-file=- \
-              --replication-policy=automatic \
-              --quiet
-          fi
-
-      - name: Normalize MYSQL_PRISMA_URL binding type
-        run: |
-          gcloud run services update "$BACKEND_SERVICE_NAME_SAFE" --region "$REGION" --project "$PROJECT_ID" --remove-env-vars MYSQL_PRISMA_URL --quiet || true
-          gcloud run services update "$BACKEND_SERVICE_NAME_SAFE" --region "$REGION" --project "$PROJECT_ID" --remove-secrets MYSQL_PRISMA_URL --quiet || true
-
-      - name: Deploy backend to Cloud Run
-        run: |
-          gcloud run deploy $BACKEND_SERVICE_NAME_SAFE \
+          gcloud run deploy $BACKEND_SERVICE_NAME \
             --image $BACKEND_IMAGE \
             --region $REGION \
             --project $PROJECT_ID \
@@ -120,78 +62,44 @@ jobs:
             --set-secrets "MYSQL_PRISMA_URL=MYSQL_PRISMA_URL:latest" \
             --add-cloudsql-instances=${{ secrets.CLOUDSQL_INSTANCE_CONNECTION_NAME }}
 
-      # Download and start Cloud SQL Auth Proxy
-      - name: Download Cloud SQL Auth Proxy
+      - name: SQL Proxy and Prisma Migrations
         run: |
           wget https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.3/cloud-sql-proxy.linux.amd64 -O cloud_sql_proxy
           chmod +x cloud_sql_proxy
-          
-      - name: Start Cloud SQL Auth Proxy
-        run: |
           ./cloud_sql_proxy ${{ secrets.CLOUDSQL_INSTANCE_CONNECTION_NAME }} --address 127.0.0.1 --port 3306 &
-
-      - name: Wait for Cloud SQL Proxy
-        run: |
-          for i in {1..30}; do
-            nc -z 127.0.0.1 3306 && exit 0
-            sleep 1
-          done
-          echo "Cloud SQL Proxy did not become ready on port 3306"
-          exit 1
-
-      - name: Install backend dependencies
-        run: |
+          sleep 10
           cd backend
           npm ci
-
-# --- UPDATED PRISMA MIGRATION STEP ---
-      - name: Run Prisma migrations
-        run: |
-          cd backend
-          # Safely URL-encode the raw password using jq
           ENCODED_PASS=$(jq -nr --arg v "${{ secrets.DB_PASSWORD || secrets.DB_PASS }}" '$v|@uri')
-          
-          # Export the connection string with the encoded password and TCP port 3306
           export MYSQL_PRISMA_URL="mysql://${{ secrets.DB_USER }}:${ENCODED_PASS}@127.0.0.1:3306/${{ secrets.DB_NAME }}"
-          
-          # Run the migration against the local Cloud SQL Proxy
           npm run prisma:migrate:deploy
 
-      # Retrieve backend Cloud Run URL
-      - name: Get backend Cloud Run URL
-        id: get-backend-url
+      - name: Get Backend URL
         run: |
-          BACKEND_URL=$(gcloud run services describe $BACKEND_SERVICE_NAME_SAFE --region $REGION --format='value(status.url)')
-          echo "BACKEND_URL=$BACKEND_URL" >> $GITHUB_ENV
+          B_URL=$(gcloud run services describe $BACKEND_SERVICE_NAME --region $REGION --format='value(status.url)')
+          echo "BACKEND_URL=$B_URL" >> $GITHUB_ENV
 
-      # Build and push frontend
-      - name: Build frontend Docker image
+      - name: Build and Push Frontend
         run: |
           docker build \
             --build-arg NEXT_PUBLIC_API_URL="${BACKEND_URL}/api/v1" \
-            --build-arg NEXT_PUBLIC_CART_API_URL="${{ secrets.FRONTEND_NEXT_PUBLIC_CART_API_URL || secrets.NEXT_PUBLIC_CART_API_URL }}" \
-            --build-arg NEXT_PUBLIC_CHAT_DEPLOYMENT="${{ secrets.FRONTEND_NEXT_PUBLIC_CHAT_DEPLOYMENT || secrets.NEXT_PUBLIC_CHAT_DEPLOYMENT }}" \
-            --build-arg NEXT_PUBLIC_CHAT_TITLE="${{ secrets.FRONTEND_NEXT_PUBLIC_CHAT_TITLE || secrets.NEXT_PUBLIC_CHAT_TITLE }}" \
+            --build-arg NEXT_PUBLIC_CART_API_URL="${{ secrets.NEXT_PUBLIC_CART_API_URL }}" \
             -t $FRONTEND_IMAGE ./frontend
-
-      - name: Push frontend Docker image
-        run: |
           docker push $FRONTEND_IMAGE
-          
-      # Deploy frontend to Cloud Run
-      - name: Deploy frontend to Cloud Run
+
+      - name: Deploy Frontend
         run: |
-          gcloud run deploy $FRONTEND_SERVICE_NAME_SAFE \
+          gcloud run deploy $FRONTEND_SERVICE_NAME \
             --image $FRONTEND_IMAGE \
             --region $REGION \
             --port 3000 \
             --allow-unauthenticated
 
-      - name: Get frontend Cloud Run URL
+      - name: Get Frontend URL
         id: get-frontend-url
         run: |
-          FRONTEND_URL=$(gcloud run services describe $FRONTEND_SERVICE_NAME_SAFE --region $REGION --format='value(status.url)')
-          echo "frontend_url=$FRONTEND_URL" >> "$GITHUB_OUTPUT"
+          F_URL=$(gcloud run services describe $FRONTEND_SERVICE_NAME --region $REGION --format='value(status.url)')
+          echo "frontend_url=$F_URL" >> "$GITHUB_OUTPUT"
 
   deploy-functions:
     runs-on: ubuntu-latest
@@ -202,148 +110,42 @@ jobs:
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ secrets.GCP_REGION }}
-      DEPLOYER_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT_EMAIL || secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
-      CART_AGENT_FUNCTION_NAME: checkout-service
-      CONNECT_BIGQUERY_FUNCTION_NAME: sync-mysql-to-bq
-      CAR_PARTS_FUNCTION_NAME: search-parts
-      SEARCH_PRODUCTS_FUNCTION_NAME: search-products
-      BQ_DATASET: ${{ vars.BQ_DATASET || 'cloud_mastery' }}
-      BQ_PRODUCTS_TABLE: ${{ vars.BQ_PRODUCTS_TABLE || 'products' }}
-      BQ_PARTS_TABLE: ${{ vars.BQ_PARTS_TABLE || 'table_parts_catalog' }}
-      CONNECT_BIGQUERY_TABLES: ${{ vars.CONNECT_BIGQUERY_TABLES || 'table_parts_catalog,table_finance,orders,order_details,customers,products' }}
+      DEPLOYER_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT_EMAIL }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Validate required secrets for functions
-        env:
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_REGION: ${{ secrets.GCP_REGION }}
-          # Use the same logic for DB Pass as the original
-          DB_PASS: ${{ secrets.DB_PASSWORD || secrets.DB_PASS }}
-          PESAPAL_KEY: ${{ secrets.PESAPAL_CONSUMER_KEY }}
-        run: |
-          echo "Checking secrets for functions..."
-          [[ -n "$GCP_PROJECT_ID" ]] || { echo "GCP_PROJECT_ID is missing"; exit 1; }
-          [[ -n "$GCP_REGION" ]] || { echo "GCP_REGION is missing"; exit 1; }
-          [[ -n "$DB_PASS" ]] || { echo "Database password is missing"; exit 1; }
-          [[ -n "$PESAPAL_KEY" ]] || { echo "Pesapal Key is missing"; exit 1; }
-          echo "Function secrets are valid."
-
-      - name: Authenticate to Google Cloud with Workload Identity Federation
+      - name: Authenticate
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT_EMAIL }}
-          token_format: 'access_token'
 
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v3
-        with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
-          install_components: 'beta'
-
-      - name: Prepare lowercase function names
+      - name: Deploy Cart Agent (checkout-service)
         run: |
-          sanitize_function_name() {
-            local raw="$1"
-            local lowered
-            lowered="$(echo "$raw" | tr '[:upper:]' '[:lower:]')"
-            lowered="$(echo "$lowered" | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')"
-            if [[ ! "$lowered" =~ ^[a-z] ]]; then
-              lowered="fn-${lowered}"
-            fi
-            lowered="${lowered:0:63}"
-            lowered="$(echo "$lowered" | sed -E 's/-+$//')"
-            if [[ -z "$lowered" ]]; then
-              lowered="fn-app"
-            fi
-            echo "$lowered"
-          }
+          gcloud functions deploy checkout-service \
+            --gen2 --region $REGION --runtime nodejs22 --entry-point cart_agent \
+            --source ./checkout-service --trigger-http --allow-unauthenticated \
+            --service-account=$DEPLOYER_SERVICE_ACCOUNT --quiet \
+            --set-env-vars "GCP_PROJECT_ID=$PROJECT_ID,PESAPAL_CONSUMER_KEY=${{ secrets.PESAPAL_CONSUMER_KEY }}"
 
-          CART_AGENT_FUNCTION_SAFE="$(sanitize_function_name "$CART_AGENT_FUNCTION_NAME")"
-          CONNECT_BIGQUERY_FUNCTION_SAFE="$(sanitize_function_name "$CONNECT_BIGQUERY_FUNCTION_NAME")"
-          CAR_PARTS_FUNCTION_SAFE="$(sanitize_function_name "$CAR_PARTS_FUNCTION_NAME")"
-          SEARCH_PRODUCTS_FUNCTION_SAFE="$(sanitize_function_name "$SEARCH_PRODUCTS_FUNCTION_NAME")"
-
-          echo "CART_AGENT_FUNCTION_NAME_SAFE=${CART_AGENT_FUNCTION_SAFE}" >> "$GITHUB_ENV"
-          echo "CONNECT_BIGQUERY_FUNCTION_NAME_SAFE=${CONNECT_BIGQUERY_FUNCTION_SAFE}" >> "$GITHUB_ENV"
-          echo "CAR_PARTS_FUNCTION_NAME_SAFE=${CAR_PARTS_FUNCTION_SAFE}" >> "$GITHUB_ENV"
-          echo "SEARCH_PRODUCTS_FUNCTION_NAME_SAFE=${SEARCH_PRODUCTS_FUNCTION_SAFE}" >> "$GITHUB_ENV"
-
-      - name: Deploy Cart Agent Cloud Function (Gen2)
+      - name: Deploy Sync Function (Connect-bigquery)
         run: |
-          gcloud functions deploy $CART_AGENT_FUNCTION_NAME_SAFE \
-            --gen2 \
-            --region $REGION \
-            --runtime nodejs22 \
-            --entry-point cart_agent \
-            --source ./checkout-service \
-            --service-account=$DEPLOYER_SERVICE_ACCOUNT \
-            --trigger-http \
-            --allow-unauthenticated \
-            --cpu 4 \
-            --concurrency 80 \
-            --memory 2Gi \
-            --timeout 240s \
-            --quiet \
-            --set-env-vars "^##^GCP_PROJECT_ID=$PROJECT_ID##BQ_PROJECT=$PROJECT_ID##BQ_DATASET=$BQ_DATASET##BQ_PRODUCTS_TABLE=$BQ_PRODUCTS_TABLE##PESAPAL_BASE_URL=${{ secrets.PESAPAL_BASE_URL }}##PESAPAL_CONSUMER_KEY=${{ secrets.PESAPAL_CONSUMER_KEY }}##PESAPAL_CONSUMER_SECRET=${{ secrets.PESAPAL_CONSUMER_SECRET }}##PESAPAL_NOTIFICATION_ID=${{ secrets.PESAPAL_NOTIFICATION_ID }}##PESAPAL_CALLBACK_URL=${{ needs.deploy-services.outputs.frontend_url }}##PESAPAL_BRANCH=${{ secrets.PESAPAL_BRANCH }}##PESAPAL_DEMO_AMOUNT=${{ secrets.PESAPAL_DEMO_AMOUNT }}##PESAPAL_PLACEHOLDER_EMAIL=${{ secrets.PESAPAL_PLACEHOLDER_EMAIL }}"
+          gcloud functions deploy sync-mysql-to-bq \
+            --gen2 --region $REGION --runtime python311 --entry-point sync_mysql_to_bq \
+            --source ./Connect-bigquery --trigger-http --allow-unauthenticated \
+            --service-account=$DEPLOYER_SERVICE_ACCOUNT --quiet
 
-      - name: Enable session affinity for Cart Agent service
+      - name: Deploy Car Parts (search-parts)
         run: |
-          gcloud run services update $CART_AGENT_FUNCTION_NAME_SAFE \
-            --region $REGION \
-            --project $PROJECT_ID \
-            --session-affinity \
-            --quiet
+          gcloud functions deploy search-parts \
+            --gen2 --region $REGION --runtime python311 --entry-point search_parts \
+            --source ./search-parts --trigger-http --allow-unauthenticated \
+            --service-account=$DEPLOYER_SERVICE_ACCOUNT --quiet
 
-      - name: Deploy Connect BigQuery Cloud Function (Gen2)
-        env:
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD || secrets.DB_PASS }}
+      - name: Deploy Search Products (Search-products)
         run: |
-          gcloud functions deploy $CONNECT_BIGQUERY_FUNCTION_NAME_SAFE \
-            --gen2 \
-            --region $REGION \
-            --runtime python311 \
-            --entry-point sync_mysql_to_bq \
-            --source ./Connect-bigquery \
-            --service-account=$DEPLOYER_SERVICE_ACCOUNT \
-            --trigger-http \
-            --allow-unauthenticated \
-            --memory 512Mi \
-            --timeout 300s \
-            --quiet \
-            --set-env-vars "^##^GCP_PROJECT_ID=$PROJECT_ID##BQ_PROJECT=$PROJECT_ID##BQ_DATASET=$BQ_DATASET##CLOUDSQL_INSTANCE_CONNECTION_NAME=${{ secrets.CLOUDSQL_INSTANCE_CONNECTION_NAME }}##DB_NAME=${{ secrets.DB_NAME }}##DB_USER=${{ secrets.DB_USER }}##DB_PASSWORD=$DB_PASSWORD##CONNECT_BIGQUERY_TABLES=$CONNECT_BIGQUERY_TABLES"
-
-      - name: Deploy Car Parts Cloud Function (Gen2)
-        run: |
-          gcloud functions deploy $CAR_PARTS_FUNCTION_NAME_SAFE \
-            --gen2 \
-            --region $REGION \
-            --runtime python311 \
-            --entry-point search_parts \
-            --source ./search-parts \
-            --service-account=$DEPLOYER_SERVICE_ACCOUNT \
-            --trigger-http \
-            --allow-unauthenticated \
-            --memory 512Mi \
-            --timeout 120s \
-            --quiet \
-            --set-env-vars "^##^GCP_PROJECT_ID=$PROJECT_ID##BQ_PROJECT=$PROJECT_ID##BQ_DATASET=$BQ_DATASET##BQ_PARTS_TABLE=$BQ_PARTS_TABLE"
-
-      - name: Deploy Search Products Cloud Function (Gen2)
-        run: |
-          gcloud functions deploy $SEARCH_PRODUCTS_FUNCTION_NAME_SAFE \
-            --gen2 \
-            --region $REGION \
-            --runtime python311 \
-            --entry-point search_product \
-            --source ./Search-products \
-            --service-account=$DEPLOYER_SERVICE_ACCOUNT \
-            --trigger-http \
-            --allow-unauthenticated \
-            --memory 512Mi \
-            --timeout 120s \
-            --quiet \
-            --set-env-vars "^##^GCP_PROJECT_ID=$PROJECT_ID##BQ_PROJECT=$PROJECT_ID##BQ_DATASET=$BQ_DATASET##BQ_PRODUCTS_TABLE=$BQ_PRODUCTS_TABLE"
-
+          gcloud functions deploy search-products \
+            --gen2 --region $REGION --runtime python311 --entry-point search_product \
+            --source ./Search-products --trigger-http --allow-unauthenticated \
+            --service-account=$DEPLOYER_SERVICE_ACCOUNT --quiet
