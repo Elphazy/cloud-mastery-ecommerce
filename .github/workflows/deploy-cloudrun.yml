@@ -16,8 +16,7 @@ jobs:
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ secrets.GCP_REGION }}
-      DEPLOYER_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT }}
-      BACKEND_SERVICE_NAME: ${{ secrets.CLOUD_RUN_BACKEND_SERVICE_NAME }}
+      DEPLOYER_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT_EMAIL }}      BACKEND_SERVICE_NAME: ${{ secrets.CLOUD_RUN_BACKEND_SERVICE_NAME }}
       FRONTEND_SERVICE_NAME: ${{ secrets.CLOUD_RUN_FRONTEND_SERVICE_NAME }}
       BQ_DATASET: ${{ vars.BQ_DATASET || 'cloud_mastery' }}
     steps:
@@ -232,7 +231,7 @@ jobs:
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ env.DEPLOYER_SERVICE_ACCOUNT }}
+          service_account: ${{ secrets.GCP_DEPLOYER_SERVICE_ACCOUNT_EMAIL }}
           token_format: 'access_token'
 
       - name: Set up Cloud SDK
