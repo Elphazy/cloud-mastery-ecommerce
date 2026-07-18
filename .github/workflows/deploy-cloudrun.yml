@@ -26,16 +26,16 @@ jobs:
 
       - name: Validate required secrets
         env:
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_REGION: ${{ secrets.GCP_REGION }}
-          GCP_WIF: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          # Add any other critical ones here if you want to keep checking them
+          # This connects the Secrets directly to the names the script below uses
+          CHECK_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          CHECK_REGION: ${{ secrets.GCP_REGION }}
+          CHECK_WIF: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
         run: |
           echo "Checking for required secrets..."
-          [[ -n "$GCP_PROJECT_ID" ]] || { echo "GCP_PROJECT_ID is missing"; exit 1; }
-          [[ -n "$GCP_REGION" ]] || { echo "GCP_REGION is missing"; exit 1; }
-          [[ -n "$GCP_WIF" ]] || { echo "GCP_WORKLOAD_IDENTITY_PROVIDER is missing"; exit 1; }
-          echo "Basic secrets are present."
+          [[ -n "$CHECK_PROJECT_ID" ]] || { echo "GCP_PROJECT_ID secret is missing in GitHub Settings"; exit 1; }
+          [[ -n "$CHECK_REGION" ]] || { echo "GCP_REGION secret is missing in GitHub Settings"; exit 1; }
+          [[ -n "$CHECK_WIF" ]] || { echo "GCP_WORKLOAD_IDENTITY_PROVIDER secret is missing in GitHub Settings"; exit 1; }
+          echo "All basic secrets are present."
       - name: Authenticate to Google Cloud with Workload Identity Federation
         uses: google-github-actions/auth@v3
         with:
