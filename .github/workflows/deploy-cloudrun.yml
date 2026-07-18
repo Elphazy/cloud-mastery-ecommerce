@@ -108,7 +108,7 @@ jobs:
           gcloud run services update "$BACKEND_SERVICE_NAME_SAFE" --region "$REGION" --project "$PROJECT_ID" --remove-env-vars MYSQL_PRISMA_URL --quiet || true
           gcloud run services update "$BACKEND_SERVICE_NAME_SAFE" --region "$REGION" --project "$PROJECT_ID" --remove-secrets MYSQL_PRISMA_URL --quiet || true
 
-  - name: Deploy backend to Cloud Run
+      - name: Deploy backend to Cloud Run
         run: |
           gcloud run deploy $BACKEND_SERVICE_NAME_SAFE \
             --image $BACKEND_IMAGE \
